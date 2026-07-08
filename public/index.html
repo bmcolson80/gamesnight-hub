@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>GamesNight</title>
+<style>
+:root{
+  --navy:#0d1030; --navy-light:#1c2050; --navy-mid:#242a63;
+  --accent:#6f8cff; --accent-light:#8fa6ff;
+  --text:#f2f2f8; --text-dim:rgba(242,242,248,.6);
+  --shadow:rgba(0,0,0,.4); --radius:12px; --radius-sm:6px;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; min-height:100vh; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  color:var(--text);
+  background:
+    radial-gradient(2px 2px at 20% 30%, rgba(255,255,255,.6), transparent),
+    radial-gradient(1.5px 1.5px at 60% 15%, rgba(255,255,255,.5), transparent),
+    radial-gradient(1.5px 1.5px at 80% 60%, rgba(255,255,255,.4), transparent),
+    radial-gradient(2px 2px at 40% 80%, rgba(255,255,255,.5), transparent),
+    radial-gradient(1px 1px at 90% 25%, rgba(255,255,255,.4), transparent),
+    linear-gradient(180deg, #05061a 0%, var(--navy) 60%, #131742 100%);
+  background-attachment:fixed;
+}
+.screen{display:none}
+.screen.active{display:block}
+.centered{max-width:400px;margin:0 auto;padding:48px 20px}
+.logo-title{font-size:36px;font-weight:800;letter-spacing:2px;text-align:center;margin:8px 0 4px}
+.logo-sub{font-size:13px;color:var(--text-dim);text-align:center;letter-spacing:.5px;margin-bottom:32px}
+.card{background:rgba(28,32,80,.55);border:1px solid rgba(255,255,255,.08);border-radius:var(--radius);padding:24px;backdrop-filter:blur(6px);margin-bottom:16px}
+.card h2{margin:0 0 20px;text-align:center;font-size:15px;letter-spacing:2px;color:var(--text-dim)}
+.field-group{margin-bottom:14px}
+.field-group label{display:block;font-size:12px;color:var(--text-dim);margin-bottom:6px}
+.field-group input{
+  width:100%;padding:12px 14px;border-radius:var(--radius-sm);border:1px solid rgba(255,255,255,.15);
+  background:rgba(255,255,255,.05);color:var(--text);font-size:15px;
+}
+.field-group input::placeholder{color:rgba(242,242,248,.35)}
+.btn{width:100%;padding:14px;border-radius:var(--radius-sm);border:none;font-size:15px;font-weight:700;cursor:pointer;margin-bottom:10px}
+.btn-primary{background:var(--text);color:var(--navy)}
+.btn-primary:disabled{opacity:.5;cursor:default}
+.btn-guest{background:transparent;color:var(--text);border:1px dashed rgba(255,255,255,.3)}
+.divider{display:flex;align-items:center;gap:12px;color:var(--text-dim);font-size:12px;margin:14px 0}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,.15)}
+.link-btn{background:none;border:none;color:var(--accent-light);cursor:pointer;font-size:13px;text-decoration:underline;padding:0}
+.error-msg{display:none;background:rgba(255,80,80,.15);border:1px solid rgba(255,80,80,.4);color:#ffb0b0;padding:10px 12px;border-radius:var(--radius-sm);font-size:13px;margin-bottom:14px}
+.foot-link{text-align:center;font-size:13px;color:var(--text-dim);margin-top:4px}
+
+/* Dashboard */
+.dashboard-header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid rgba(255,255,255,.08)}
+.dh-logo{font-weight:800;letter-spacing:2px}
+.user-chip{display:flex;align-items:center;gap:10px}
+.avatar{width:32px;height:32px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700}
+.btn-logout{background:none;border:1px solid rgba(255,255,255,.2);color:var(--text);border-radius:var(--radius-sm);padding:6px 12px;cursor:pointer;font-size:12px}
+.dashboard-body{max-width:900px;margin:0 auto;padding:32px 20px;display:grid;grid-template-columns:1fr 260px;gap:32px}
+@media (max-width:700px){.dashboard-body{grid-template-columns:1fr}}
+.section-title{font-size:12px;letter-spacing:1.5px;color:var(--text-dim);margin-bottom:12px}
+.game-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:16px}
+.game-tile{
+  background:rgba(28,32,80,.55);border:1px solid rgba(255,255,255,.08);border-radius:var(--radius);
+  padding:24px 12px;text-align:center;cursor:pointer;transition:transform .15s, border-color .15s;
+}
+.game-tile:hover{transform:translateY(-2px);border-color:var(--accent)}
+.game-tile-icon{font-size:40px;margin-bottom:10px}
+.game-tile-name{font-weight:700;font-size:14px}
+.online-panel{background:rgba(28,32,80,.55);border:1px solid rgba(255,255,255,.08);border-radius:var(--radius);padding:16px}
+.online-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+.online-row:last-child{border-bottom:none}
+.online-name{display:flex;align-items:center;gap:8px;font-size:13px}
+.online-dot{width:8px;height:8px;border-radius:50%;background:#4ade80}
+.invite-btn{background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);padding:5px 10px;font-size:11px;cursor:pointer}
+.invite-btn:disabled{opacity:.4;cursor:default}
+.empty-note{color:var(--text-dim);font-size:13px}
+
+/* Toast / invite modal */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--navy-mid);border:1px solid rgba(255,255,255,.15);
+  border-radius:var(--radius);padding:14px 20px;display:flex;align-items:center;gap:14px;z-index:50;box-shadow:0 8px 24px var(--shadow)}
+.toast button{border:none;border-radius:var(--radius-sm);padding:6px 12px;font-size:12px;cursor:pointer;font-weight:700}
+.toast .accept{background:var(--accent);color:#fff}
+.toast .decline{background:transparent;color:var(--text-dim);border:1px solid rgba(255,255,255,.2)}
+</style>
+</head>
+<body>
+
+<!-- ═══ AUTH SCREEN ═══ -->
+<div id="auth-screen" class="screen active">
+  <div class="centered">
+    <div class="logo-title">GAMESNIGHT</div>
+    <div class="logo-sub">warning: may cause flipped tables</div>
+
+    <div class="card" id="auth-login">
+      <h2>SIGN IN</h2>
+      <div class="error-msg" id="login-error"></div>
+      <div class="field-group"><label>Email</label><input type="email" id="login-email" placeholder="email@example.com" autocomplete="email"></div>
+      <div class="field-group"><label>Password</label><input type="password" id="login-password" placeholder="••••••••" autocomplete="current-password"></div>
+      <button class="btn btn-primary" id="login-btn" onclick="doLogin()">Log In</button>
+      <div class="divider">or</div>
+      <button class="btn btn-guest" onclick="enterGuestMode()">Play as Guest</button>
+      <div class="foot-link" style="margin-top:12px">
+        New here? <button class="link-btn" onclick="showAuthCard('register')">Sign up</button>
+        &nbsp;·&nbsp;
+        <button class="link-btn" onclick="showAuthCard('forgot')">Forgot password?</button>
+      </div>
+    </div>
+
+    <div class="card" id="auth-register" style="display:none">
+      <h2>CREATE ACCOUNT</h2>
+      <div class="error-msg" id="register-error"></div>
+      <div class="field-group"><label>Your Name</label><input type="text" id="reg-name" placeholder="Display name" maxlength="20" autocomplete="name"></div>
+      <div class="field-group"><label>Email</label><input type="email" id="reg-email" placeholder="email@example.com" autocomplete="email"></div>
+      <div class="field-group"><label>Password</label><input type="password" id="reg-password" placeholder="Min 6 characters" autocomplete="new-password"></div>
+      <button class="btn btn-primary" id="register-btn" onclick="doRegister()">Create Account</button>
+      <div class="foot-link">Already have one? <button class="link-btn" onclick="showAuthCard('login')">Sign in</button></div>
+    </div>
+
+    <div class="card" id="auth-forgot" style="display:none">
+      <h2>RESET PASSWORD</h2>
+      <p style="font-size:13px;color:var(--text-dim);text-align:center;margin-bottom:20px">Enter your email and we'll send a 6-digit code.</p>
+      <div class="error-msg" id="forgot-error"></div>
+      <div class="field-group"><label>Email</label><input type="email" id="forgot-email" placeholder="email@example.com" autocomplete="email"></div>
+      <button class="btn btn-primary" id="forgot-btn" onclick="doForgotPassword()">Send Reset Code</button>
+      <div class="foot-link"><button class="link-btn" onclick="showAuthCard('login')">Back to sign in</button></div>
+    </div>
+
+    <div class="card" id="auth-otp" style="display:none">
+      <h2>ENTER CODE</h2>
+      <p style="font-size:13px;color:var(--text-dim);text-align:center;margin-bottom:20px">Check your email for the 6-digit code.</p>
+      <div class="error-msg" id="otp-error"></div>
+      <div class="field-group"><label>6-Digit Code</label><input type="text" id="otp-code" maxlength="6" inputmode="numeric" placeholder="000000" autocomplete="one-time-code"></div>
+      <button class="btn btn-primary" id="otp-btn" onclick="doVerifyOTP()">Verify Code</button>
+      <div class="foot-link"><button class="link-btn" onclick="showAuthCard('login')">Cancel</button></div>
+    </div>
+
+    <div class="card" id="auth-newpass" style="display:none">
+      <h2>NEW PASSWORD</h2>
+      <div class="error-msg" id="newpass-error"></div>
+      <div class="field-group"><label>New Password</label><input type="password" id="new-password" placeholder="Min 6 characters" autocomplete="new-password"></div>
+      <button class="btn btn-primary" id="newpass-btn" onclick="doResetPassword()">Set New Password</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ DASHBOARD ═══ -->
+<div id="dashboard-screen" class="screen">
+  <div class="dashboard-header">
+    <div class="dh-logo">GAMESNIGHT</div>
+    <div class="user-chip" id="user-chip">
+      <div class="avatar" id="user-avatar">?</div>
+      <span id="user-name-display"></span>
+      <button class="btn-logout" onclick="doLogout()">Log out</button>
+    </div>
+  </div>
+  <div class="dashboard-body">
+    <div>
+      <div class="section-title">YOUR GAMES</div>
+      <div class="game-grid" id="game-grid"></div>
+    </div>
+    <div id="online-section">
+      <div class="section-title">ONLINE NOW</div>
+      <div class="online-panel" id="online-panel"><div class="empty-note">No one else is online right now.</div></div>
+    </div>
+  </div>
+</div>
+
+<div id="invite-toast-container"></div>
+
+<script>
+let currentUser = null;
+let isGuest     = false;
+let games       = [];
+let onlineUsers = [];
+let ws          = null;
+
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id + '-screen').classList.add('active');
+}
+function showAuthCard(name) {
+  ['login','register','forgot','otp','newpass'].forEach(c => {
+    document.getElementById('auth-' + c).style.display = c === name ? 'block' : 'none';
+  });
+}
+function showErr(form, msg) {
+  const el = document.getElementById(form + '-error');
+  el.textContent = msg; el.style.display = 'block';
+}
+function clearErr(form) { document.getElementById(form + '-error').style.display = 'none'; }
+
+// ── Auth actions ─────────────────────────────────────────
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!email || !password) return showErr('login', 'Email and password required');
+  clearErr('login');
+  document.getElementById('login-btn').disabled = true;
+  try {
+    const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email,password}) });
+    const data = await res.json();
+    if (!res.ok) { showErr('login', data.error); document.getElementById('login-btn').disabled = false; return; }
+    currentUser = data.user;
+    onLoggedIn();
+  } catch { showErr('login', 'Connection error'); document.getElementById('login-btn').disabled = false; }
+}
+
+async function doRegister() {
+  const name = document.getElementById('reg-name').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const password = document.getElementById('reg-password').value;
+  if (!name || !email || !password) return showErr('register', 'All fields required');
+  clearErr('register');
+  document.getElementById('register-btn').disabled = true;
+  try {
+    const res = await fetch('/api/register', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,email,password}) });
+    const data = await res.json();
+    if (!res.ok) { showErr('register', data.error); document.getElementById('register-btn').disabled = false; return; }
+    currentUser = data.user;
+    onLoggedIn();
+  } catch { showErr('register', 'Connection error'); document.getElementById('register-btn').disabled = false; }
+}
+
+let forgotEmail = '';
+async function doForgotPassword() {
+  const email = document.getElementById('forgot-email').value.trim();
+  if (!email) return showErr('forgot', 'Email required');
+  clearErr('forgot');
+  document.getElementById('forgot-btn').disabled = true;
+  try {
+    await fetch('/api/forgot-password', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email}) });
+    forgotEmail = email;
+    showAuthCard('otp');
+  } catch { showErr('forgot', 'Connection error'); }
+  document.getElementById('forgot-btn').disabled = false;
+}
+
+let resetToken = '';
+async function doVerifyOTP() {
+  const code = document.getElementById('otp-code').value.trim();
+  if (!code) return showErr('otp', 'Enter the code');
+  clearErr('otp');
+  try {
+    const res = await fetch('/api/verify-otp', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({email:forgotEmail, code}) });
+    const data = await res.json();
+    if (!res.ok) return showErr('otp', data.error);
+    resetToken = data.resetToken;
+    showAuthCard('newpass');
+  } catch { showErr('otp', 'Connection error'); }
+}
+
+async function doResetPassword() {
+  const newPassword = document.getElementById('new-password').value;
+  if (!newPassword) return showErr('newpass', 'Enter a new password');
+  clearErr('newpass');
+  try {
+    const res = await fetch('/api/reset-password', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({resetToken, newPassword}) });
+    const data = await res.json();
+    if (!res.ok) return showErr('newpass', data.error);
+    currentUser = data.user;
+    onLoggedIn();
+  } catch { showErr('newpass', 'Connection error'); }
+}
+
+async function doLogout() {
+  await fetch('/api/logout', { method:'POST' });
+  currentUser = null; isGuest = false;
+  ws?.close(); ws = null;
+  showAuthCard('login');
+  showScreen('auth');
+}
+
+function enterGuestMode() {
+  isGuest = true; currentUser = null;
+  document.getElementById('user-chip').style.display = 'none';
+  document.getElementById('online-section').style.display = 'none';
+  loadGames();
+  showScreen('dashboard');
+}
+
+function onLoggedIn() {
+  isGuest = false;
+  document.getElementById('user-chip').style.display = 'flex';
+  document.getElementById('online-section').style.display = 'block';
+  document.getElementById('user-avatar').textContent = currentUser.name.charAt(0).toUpperCase();
+  document.getElementById('user-name-display').textContent = currentUser.name;
+  loadGames();
+  showScreen('dashboard');
+  connectWS();
+}
+
+async function checkSession() {
+  try {
+    const res = await fetch('/api/me');
+    if (res.ok) {
+      const data = await res.json();
+      currentUser = data.user;
+      onLoggedIn();
+    } else {
+      showScreen('auth');
+    }
+  } catch { showScreen('auth'); }
+}
+
+// ── Games ─────────────────────────────────────────────────
+async function loadGames() {
+  try {
+    const res = await fetch('/api/games');
+    const data = await res.json();
+    games = data.games || [];
+    renderGames();
+  } catch { games = []; renderGames(); }
+}
+
+function renderGames() {
+  const grid = document.getElementById('game-grid');
+  if (!games.length) { grid.innerHTML = '<div class="empty-note">No games configured yet.</div>'; return; }
+  grid.innerHTML = games.map(g => `
+    <div class="game-tile" data-game-id="${g.id}">
+      <div class="game-tile-icon">${g.icon}</div>
+      <div class="game-tile-name">${g.name}</div>
+    </div>`).join('');
+  grid.querySelectorAll('.game-tile').forEach(el => {
+    el.addEventListener('click', () => launchGame(el.dataset.gameId));
+  });
+}
+
+async function launchGame(gameId) {
+  const game = games.find(g => g.id === gameId);
+  if (!game) return;
+  if (isGuest || !currentUser) {
+    // No SSO handoff for guests — the target game handles anonymous play itself.
+    location.href = game.url;
+    return;
+  }
+  try {
+    const res = await fetch(`/api/games/${gameId}/launch`);
+    const data = await res.json();
+    if (data.url) location.href = data.url;
+  } catch {}
+}
+
+// ── Presence + invites ──────────────────────────────────────
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+  ws.onmessage = ev => { try { handleWSMessage(JSON.parse(ev.data)); } catch {} };
+  ws.onclose = () => { if (currentUser) setTimeout(connectWS, 2000); };
+}
+
+function sendWS(data) { if (ws?.readyState === 1) ws.send(JSON.stringify(data)); }
+
+function handleWSMessage(msg) {
+  switch (msg.type) {
+    case 'online_list':
+      onlineUsers = (msg.users || []).filter(u => u.id !== currentUser?.id);
+      renderOnline();
+      break;
+    case 'invite_received':
+      showInviteToast(msg.fromUser, msg.game);
+      break;
+    case 'invite_declined':
+      showToast(`${msg.byUser.name} declined your invite.`);
+      break;
+    case 'invite_room_ready':
+      goToGameRoom(msg.game, msg.code, msg.role);
+      break;
+    case 'error':
+      showToast(msg.message);
+      break;
+  }
+}
+
+function renderOnline() {
+  const panel = document.getElementById('online-panel');
+  if (!onlineUsers.length) { panel.innerHTML = '<div class="empty-note">No one else is online right now.</div>'; return; }
+  panel.innerHTML = onlineUsers.map(u => `
+    <div class="online-row">
+      <div class="online-name"><span class="online-dot"></span>${u.name}</div>
+      <select class="invite-select" data-user-id="${u.id}" ${games.length ? '' : 'disabled'}>
+        ${games.map(g => `<option value="${g.id}">${g.icon} ${g.name}</option>`).join('')}
+      </select>
+      <button class="invite-btn" data-user-id="${u.id}" ${games.length ? '' : 'disabled'}>Invite</button>
+    </div>`).join('');
+  panel.querySelectorAll('.invite-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const uid = btn.dataset.userId;
+      const select = panel.querySelector(`.invite-select[data-user-id="${uid}"]`);
+      sendWS({ type:'invite', toUserId: uid, game: select.value });
+      btn.disabled = true; btn.textContent = 'Invited';
+    });
+  });
+}
+
+let pendingInvite = null;
+function showInviteToast(fromUser, game) {
+  pendingInvite = { fromUser, game };
+  const gameDef = games.find(g => g.id === game);
+  const container = document.getElementById('invite-toast-container');
+  container.innerHTML = `
+    <div class="toast">
+      <span>${fromUser.name} invited you to play ${gameDef ? gameDef.name : game}</span>
+      <button class="accept" onclick="respondToInvite(true)">Accept</button>
+      <button class="decline" onclick="respondToInvite(false)">Decline</button>
+    </div>`;
+}
+
+function respondToInvite(accepted) {
+  if (!pendingInvite) return;
+  sendWS({ type:'invite_response', toUserId: pendingInvite.fromUser.id, game: pendingInvite.game, accepted });
+  document.getElementById('invite-toast-container').innerHTML = '';
+  pendingInvite = null;
+}
+
+function showToast(text) {
+  const container = document.getElementById('invite-toast-container');
+  container.innerHTML = `<div class="toast"><span>${text}</span></div>`;
+  setTimeout(() => { container.innerHTML = ''; }, 4000);
+}
+
+async function goToGameRoom(gameId, code, role) {
+  try {
+    const res = await fetch(`/api/games/${gameId}/launch`);
+    const data = await res.json();
+    if (!data.url) return;
+    const sep = data.url.includes('?') ? '&' : '?';
+    const param = role === 'creator' ? 'createRoom' : 'joinRoom';
+    location.href = `${data.url}${sep}${param}=${code}`;
+  } catch {}
+}
+
+checkSession();
+</script>
+</body>
+</html>
