@@ -10,8 +10,8 @@ import cookieParser   from 'cookie-parser';
 import bcrypt         from 'bcryptjs';
 import jwt            from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
-import { initDB, createUser, getUserByEmail, getUserById,
-         createOTP, getValidOTP, consumeOTP, updateUserPassword } from './db.js';
+import { initDB, createUser, getUserByEmail, getUserById, getAllUsers,
+         createOTP, getValidOTP, consumeOTP, updateUserPassword, upsertUser } from './db.js';
 import { Resend } from 'resend';
 
 const resend = process.env.RESEND_API_KEY
@@ -28,13 +28,49 @@ process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED REJECTION]', reason);
 });
 
-const JWT_SECRET = process.env.JWT_SECRET || 'azul-secret-change-in-production';
+const JWT_SECRET           = process.env.JWT_SECRET || 'azul-secret-change-in-production';
+const INTERNAL_SYNC_SECRET = process.env.INTERNAL_SYNC_SECRET || '';
+const ADMIN_EMAIL          = (process.env.ADMIN_EMAIL || 'bmcolson80@gmail.com').toLowerCase();
 
 // ── Games catalog ───────────────────────────────────────────
 const GAMES = [
   { id:'azul',    name:'Azul',    icon:'🔷', url: process.env.AZUL_URL    || '' },
   { id:'mahjong', name:'Mah Jong', icon:'🀄', url: process.env.MAHJONG_URL || '' },
 ].filter(g => g.url);
+
+// ── Account sync (replicate-on-write across sibling games) ──
+// Called after a local register/password-change so every sibling game ends
+// up with the same password hash. Best-effort: a game being unreachable
+// must never affect the caller's own local account, which is already saved.
+function requireInternalSecret(req, res, next) {
+  if (!INTERNAL_SYNC_SECRET || req.headers['x-internal-secret'] !== INTERNAL_SYNC_SECRET) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+}
+
+async function pushAccountSyncTo(game, payload) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    await fetch(`${game.url}/api/internal/sync-account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': INTERNAL_SYNC_SECRET },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+  } catch (err) {
+    console.error(`[sync-account] Failed to push to ${game.id}:`, err.message);
+  }
+}
+
+// Fans an account update out to every game except the one it came from.
+function fanOutAccountSync({ email, name, passwordHash, sourceGameId }) {
+  for (const game of GAMES) {
+    if (game.id === sourceGameId) continue;
+    pushAccountSyncTo(game, { email, name, passwordHash, sourceGameId: 'hub' });
+  }
+}
 
 async function sendOTPEmail(email, code) {
   if (!resend) { console.log(`[DEV] OTP for ${email}: ${code}`); return; }
@@ -81,7 +117,42 @@ function requireAuth(req, res, next) {
   }
 }
 
+function requireAdmin(req, res, next) {
+  if (req.user?.email?.toLowerCase() !== ADMIN_EMAIL)
+    return res.status(403).json({ error: 'Forbidden' });
+  next();
+}
+
 function generateId() { return Math.random().toString(36).substr(2,9); }
+
+// Mints a short-lived JWT the hub uses to call a sibling game's own
+// requireAuth+requireAdmin-gated admin endpoints on the admin's behalf,
+// reusing the JWT_SECRET already shared for /sso rather than a new mechanism.
+function mintAdminJWT() {
+  return jwt.sign({ id: 'gamesnight-hub-admin', email: ADMIN_EMAIL, name: 'GamesNight Hub' }, JWT_SECRET, { expiresIn: '1m' });
+}
+
+// Azul reads a Bearer token; Mah Jong only reads its `token` cookie —
+// same auth-shape distinction the existing migration scripts already handle.
+async function fetchGameAdminData(game) {
+  const adminToken = mintAdminJWT();
+  const authHeaders = game.id === 'mahjong'
+    ? { Cookie: `token=${adminToken}` }
+    : { Authorization: `Bearer ${adminToken}` };
+  const overviewPath = game.id === 'mahjong' ? '/api/admin/stats' : '/api/admin/overview';
+  try {
+    const [overviewRes, usersRes] = await Promise.all([
+      fetch(`${game.url}${overviewPath}`, { headers: authHeaders }),
+      fetch(`${game.url}/api/admin/users`, { headers: authHeaders }),
+    ]);
+    const overview  = overviewRes.ok ? await overviewRes.json() : null;
+    const usersData = usersRes.ok ? await usersRes.json() : null;
+    const users     = usersData?.users ?? [];
+    return { id: game.id, name: game.name, ok: overviewRes.ok, overview, users };
+  } catch (err) {
+    return { id: game.id, name: game.name, ok: false, error: err.message, overview: null, users: [] };
+  }
+}
 
 function setSessionCookie(res, token) {
   res.cookie('gamesnight_token', token, { httpOnly:true, sameSite:'lax', maxAge:30*24*60*60*1000 });
@@ -100,6 +171,7 @@ app.post('/api/register', async (req, res) => {
   const id   = generateId();
   const hash = await bcrypt.hash(password, 10);
   createUser({ id, email, name, password: hash });
+  fanOutAccountSync({ email, name, passwordHash: hash, sourceGameId: 'hub' });
 
   const token = jwt.sign({ id, email, name }, JWT_SECRET, { expiresIn: '30d' });
   setSessionCookie(res, token);
@@ -127,7 +199,10 @@ app.post('/api/logout', (_, res) => {
 app.get('/api/me', requireAuth, (req, res) => {
   const user = getUserById(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ user: { id:user.id, email:user.email, name:user.name } });
+  res.json({
+    user: { id:user.id, email:user.email, name:user.name },
+    isAdmin: user.email.toLowerCase() === ADMIN_EMAIL,
+  });
 });
 
 app.get('/api/games', (_, res) => {
@@ -142,6 +217,18 @@ app.get('/api/games/:id/launch', requireAuth, (req, res) => {
   if (!game) return res.status(404).json({ error: 'Unknown game' });
   const token = req.cookies.gamesnight_token;
   res.json({ url: `${game.url}/sso?token=${encodeURIComponent(token)}` });
+});
+
+// Called by a sibling game right after it registers a user or changes a
+// password locally, so the hub (and in turn every other sibling game) ends
+// up with the same password. Internal-secret-gated, not a user session route.
+app.post('/api/internal/sync-account', requireInternalSecret, (req, res) => {
+  const { email, name, passwordHash, sourceGameId } = req.body || {};
+  if (!email || !name || !passwordHash)
+    return res.status(400).json({ error: 'email, name and passwordHash required' });
+  upsertUser({ id: generateId(), email, name, password: passwordHash });
+  fanOutAccountSync({ email, name, passwordHash, sourceGameId: sourceGameId || 'hub' });
+  res.json({ ok: true });
 });
 
 // ── Password reset routes ──────────────────────────────────
@@ -191,10 +278,33 @@ app.post('/api/reset-password', async (req, res) => {
   const hash = await bcrypt.hash(newPassword, 10);
   updateUserPassword(payload.email, hash);
 
-  const user  = getUserByEmail(payload.email);
+  const user = getUserByEmail(payload.email);
+  fanOutAccountSync({ email: user.email, name: user.name, passwordHash: hash, sourceGameId: 'hub' });
+
   const token = jwt.sign({ id:user.id, email:user.email, name:user.name }, JWT_SECRET, { expiresIn:'30d' });
   setSessionCookie(res, token);
   res.json({ ok:true, user:{ id:user.id, email:user.email, name:user.name } });
+});
+
+// ── Admin routes ────────────────────────────────────────────
+// The HTML shell has no sensitive data — access control happens at the
+// /api/admin/* endpoint below, called client-side.
+app.get('/admin', (_, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// Consolidated analytics — calls each sibling game's own existing
+// requireAuth+requireAdmin-gated admin endpoints and merges the results,
+// so per-game dashboards can be retired in favor of this one view.
+app.get('/api/admin/overview', requireAuth, requireAdmin, async (req, res) => {
+  const perGame = await Promise.all(GAMES.map(fetchGameAdminData));
+  const combined = perGame.reduce((acc, g) => {
+    acc.totalUsers += g.users.length;
+    acc.totalGamesStarted += g.overview?.totalGamesStarted ?? g.overview?.totalGames ?? 0;
+    acc.activeGames += g.overview?.activeGames ?? 0;
+    return acc;
+  }, { totalUsers: 0, totalGamesStarted: 0, activeGames: 0, hubUsers: getAllUsers().length });
+  res.json({ games: perGame, combined });
 });
 
 // ── HTTP/WS server ─────────────────────────────────────────

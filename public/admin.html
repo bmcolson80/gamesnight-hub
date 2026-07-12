@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>GamesNight — Admin</title>
+<style>
+:root{--navy:#0d1030;--navy-light:#1c2050;--navy-mid:#252b66;--accent:#6f8cff;--accent-light:#9fb4ff;--cream:#f2f2f8;--shadow:rgba(0,0,0,0.4);--radius:12px;--radius-sm:6px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--navy);color:var(--cream);font-family:sans-serif;min-height:100vh;padding:24px}
+.wrap{max-width:1100px;margin:0 auto}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+.title{font-size:clamp(20px,4vw,28px);font-weight:700;letter-spacing:3px;color:var(--accent-light)}
+.title-sub{font-size:11px;letter-spacing:2px;color:rgba(242,242,248,.5);margin-top:2px}
+.actions{display:flex;gap:10px}
+.btn{background:var(--navy-mid);color:var(--cream);border:1px solid rgba(111,140,255,.3);padding:8px 16px;border-radius:var(--radius-sm);font-size:13px;cursor:pointer;font-family:inherit}
+.btn:hover{background:var(--navy-light)}
+.btn-back{text-decoration:none;display:inline-flex;align-items:center}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:28px}
+.card{background:var(--navy-light);border:1px solid rgba(111,140,255,.2);border-radius:var(--radius);padding:18px;box-shadow:0 4px 16px var(--shadow)}
+.card-value{font-size:30px;font-weight:700;color:var(--accent-light)}
+.card-label{font-size:11px;letter-spacing:1.5px;color:rgba(242,242,248,.55);text-transform:uppercase;margin-top:6px}
+
+.game-section{margin-bottom:28px}
+.game-title{display:flex;align-items:center;gap:8px;font-size:15px;letter-spacing:2px;color:var(--accent-light);margin-bottom:12px;text-transform:uppercase}
+.game-error{color:#e88;font-size:13px;padding:12px 0}
+
+.panel{background:var(--navy-light);border:1px solid rgba(111,140,255,.2);border-radius:var(--radius);overflow:hidden;box-shadow:0 8px 32px var(--shadow)}
+.table-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}
+th,td{padding:12px 16px;text-align:left;border-bottom:1px solid rgba(255,255,255,.06)}
+th{font-size:11px;letter-spacing:1px;text-transform:uppercase;color:rgba(242,242,248,.5);font-weight:400}
+tr:hover td{background:rgba(255,255,255,.03)}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700}
+.pill-on{background:rgba(111,140,255,.25);color:var(--accent-light)}
+.pill-off{background:rgba(255,255,255,.08);color:rgba(242,242,248,.4)}
+.win{color:#6fbf6f;font-weight:700}
+.loss{color:rgba(242,242,248,.4)}
+.empty,.denied{padding:60px 20px;text-align:center;color:rgba(242,242,248,.5)}
+.denied a{color:var(--accent-light)}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="empty">Loading…</div>
+</div>
+
+<script>
+async function main() {
+  const app = document.getElementById('app');
+
+  const meRes = await fetch('/api/me').catch(() => null);
+  if (!meRes || !meRes.ok) {
+    app.innerHTML = denied('You must be signed in to view this page.');
+    return;
+  }
+  const me = await meRes.json();
+  if (!me.isAdmin) {
+    app.innerHTML = denied('This page is only available to the admin account.');
+    return;
+  }
+
+  const overviewRes = await fetch('/api/admin/overview');
+  if (!overviewRes.ok) {
+    app.innerHTML = denied('Failed to load admin data.');
+    return;
+  }
+  const { games, combined } = await overviewRes.json();
+  render(games, combined);
+}
+
+function denied(msg) {
+  return `<div class="denied"><p>${msg}</p><p style="margin-top:12px"><a href="/">← Back to GamesNight</a></p></div>`;
+}
+
+function render(games, combined) {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="header">
+      <div>
+        <div class="title">GAMESNIGHT — ADMIN</div>
+        <div class="title-sub">CONSOLIDATED ANALYTICS</div>
+      </div>
+      <div class="actions">
+        <button class="btn" onclick="location.reload()">↻ Refresh</button>
+        <a class="btn btn-back" href="/">← Back to GamesNight</a>
+      </div>
+    </div>
+
+    <div class="cards">
+      ${card(combined.hubUsers, 'Hub Accounts')}
+      ${card(combined.totalUsers, 'Total Users Across Games')}
+      ${card(combined.totalGamesStarted, 'Games Started')}
+      ${card(combined.activeGames, 'Games In Progress')}
+    </div>
+
+    ${games.map(gameSection).join('')}
+  `;
+}
+
+function gameSection(g) {
+  if (!g.ok) {
+    return `<div class="game-section"><div class="game-title">${escapeHtml(g.name)}</div><div class="game-error">Could not load data from ${escapeHtml(g.name)}${g.error ? ': ' + escapeHtml(g.error) : '.'}</div></div>`;
+  }
+  return `
+    <div class="game-section">
+      <div class="game-title">${escapeHtml(g.name)}</div>
+      <div class="panel">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Email</th><th class="num">Games</th><th class="num">Wins</th><th class="num">Losses</th><th>Push</th></tr>
+            </thead>
+            <tbody>${(g.users || []).map(userRow).join('') || `<tr><td colspan="6" style="text-align:center;color:rgba(242,242,248,.4)">No users yet.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function userRow(u) {
+  return `<tr>
+    <td>${escapeHtml(u.name)}</td>
+    <td>${escapeHtml(u.email)}</td>
+    <td class="num">${u.gamesPlayed ?? '–'}</td>
+    <td class="num win">${u.wins ?? '–'}</td>
+    <td class="num loss">${u.losses ?? '–'}</td>
+    <td>${pill(u.pushEnabled)}</td>
+  </tr>`;
+}
+
+function card(value, label) {
+  return `<div class="card"><div class="card-value">${value}</div><div class="card-label">${label}</div></div>`;
+}
+
+function pill(on) {
+  return on ? '<span class="pill pill-on">On</span>' : '<span class="pill pill-off">Off</span>';
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
+main();
+</script>
+</body>
+</html>

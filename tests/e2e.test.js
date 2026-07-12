@@ -129,6 +129,51 @@ describe('auth', () => {
   });
 });
 
+describe('internal account sync', () => {
+  test('register succeeds even though the configured game URLs are unreachable', async () => {
+    // AZUL_URL/MAHJONG_URL point at fake ports in the test env (see package.json's
+    // "test" script) — proving fan-out to sibling games never blocks registration.
+    const email = `fanout-${Date.now()}@example.com`;
+    const { user } = await registerAndLogin(email, 'Fanout Test');
+    assert.equal(user.email, email);
+  });
+
+  test('rejects sync-account requests without the correct internal secret', async () => {
+    const res = await fetch(`${BASE_URL}/api/internal/sync-account`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'x@example.com', name: 'X', passwordHash: 'hash' }),
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test('creates a new local account when synced from a sibling game', async () => {
+    const email = `synced-${Date.now()}@example.com`;
+    const res = await fetch(`${BASE_URL}/api/internal/sync-account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SYNC_SECRET || '' },
+      body: JSON.stringify({ email, name: 'Synced User', passwordHash: '$2a$10$fakehashfakehashfakehashfa', sourceGameId: 'azul' }),
+    });
+    assert.equal(res.status, 200);
+  });
+
+  test('updates the password hash for an account that already exists', async () => {
+    const email = `existing-${Date.now()}@example.com`;
+    await registerAndLogin(email, 'Existing', 'originalpass');
+    const syncRes = await fetch(`${BASE_URL}/api/internal/sync-account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SYNC_SECRET || '' },
+      body: JSON.stringify({ email, name: 'Existing', passwordHash: '$2a$10$fakehashfakehashfakehashfa', sourceGameId: 'azul' }),
+    });
+    assert.equal(syncRes.status, 200);
+
+    const loginRes = await fetch(`${BASE_URL}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: 'originalpass' }),
+    });
+    assert.equal(loginRes.status, 401);
+  });
+});
+
 describe('presence', () => {
   test('online list reflects connect/disconnect', async () => {
     const a = await registerAndLogin(`dave-${Date.now()}@example.com`, 'Dave');

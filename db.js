@@ -99,6 +99,22 @@ export function updateUserPassword(email, hashedPassword) {
   save();
 }
 
+// Create-or-update by email, used to replicate an account created/changed on
+// a sibling game so every app converges on the same password.
+export function upsertUser({ id, email, name, password }) {
+  const normalizedEmail = email.toLowerCase().trim();
+  const existing = getUserByEmail(normalizedEmail);
+  if (existing) {
+    db.run('UPDATE users SET name=?, password=? WHERE email=?', [name, password, normalizedEmail]);
+  } else {
+    db.run(
+      'INSERT INTO users (id, email, name, password) VALUES (?, ?, ?, ?)',
+      [id, normalizedEmail, name, password]
+    );
+  }
+  save();
+}
+
 // ── OTP / Password reset ─────────────────────────────────
 export function createOTP({ id, email, code, expiresAt }) {
   db.run("UPDATE otp_requests SET used=1 WHERE email=? AND used=0", [email.toLowerCase().trim()]);

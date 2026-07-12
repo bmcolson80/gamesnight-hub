@@ -149,6 +149,7 @@ body{
     <div class="user-chip" id="user-chip">
       <div class="avatar" id="user-avatar">?</div>
       <span id="user-name-display"></span>
+      <button class="btn-logout" id="admin-btn" style="display:none" onclick="window.location.href='/admin'">Admin</button>
       <button class="btn-logout" onclick="doLogout()">Log out</button>
     </div>
   </div>
@@ -168,6 +169,7 @@ body{
 
 <script>
 let currentUser = null;
+let isAdmin     = false;
 let isGuest     = false;
 let games       = [];
 let onlineUsers = [];
@@ -283,6 +285,7 @@ function onLoggedIn() {
   document.getElementById('online-section').style.display = 'block';
   document.getElementById('user-avatar').textContent = currentUser.name.charAt(0).toUpperCase();
   document.getElementById('user-name-display').textContent = currentUser.name;
+  document.getElementById('admin-btn').style.display = isAdmin ? '' : 'none';
   loadGames();
   showScreen('dashboard');
   connectWS();
@@ -294,6 +297,7 @@ async function checkSession() {
     if (res.ok) {
       const data = await res.json();
       currentUser = data.user;
+      isAdmin = !!data.isAdmin;
       onLoggedIn();
     } else {
       showScreen('auth');
