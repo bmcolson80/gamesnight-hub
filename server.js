@@ -231,6 +231,19 @@ app.post('/api/internal/sync-account', requireInternalSecret, (req, res) => {
   res.json({ ok: true });
 });
 
+// One-time (and safely re-runnable) reconciliation: pushes every account
+// currently in the hub's own DB out to every sibling game, so accounts that
+// existed before account-sync shipped converge on one password everywhere.
+// Runs in-process (this same server, same in-memory DB) rather than as a
+// separate script, so it can't race the live server's own sql.js saves.
+app.post('/api/admin/backfill-account-sync', requireAuth, requireAdmin, (req, res) => {
+  const users = getAllUsers();
+  for (const u of users) {
+    fanOutAccountSync({ email: u.email, name: u.name, passwordHash: u.password, sourceGameId: 'hub' });
+  }
+  res.json({ ok: true, count: users.length });
+});
+
 // ── Password reset routes ──────────────────────────────────
 app.post('/api/forgot-password', async (req, res) => {
   const { email } = req.body;
