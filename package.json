@@ -9,7 +9,8 @@
     "dev": "node --watch server.js",
     "dev:local": "AZUL_URL=http://localhost:3000 MAHJONG_URL=http://localhost:3001 PORT=4000 node --watch server.js",
     "test": "AZUL_URL=http://localhost:9999 MAHJONG_URL=http://localhost:9998 DB_PATH=/tmp/gamesnight-test.db node --test --test-timeout=15000 tests/e2e.test.js",
-    "migrate-users": "node scripts/import-users.js"
+    "migrate-users": "node scripts/import-users.js",
+    "migrate-mahjong-users": "node scripts/import-mahjong-users.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
