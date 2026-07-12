@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>GamesNight</title>
+<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
 <style>
 :root{
   --navy:#0d1030; --navy-light:#1c2050; --navy-mid:#242a63;
@@ -21,7 +24,11 @@ body{
     radial-gradient(1.5px 1.5px at 80% 60%, rgba(255,255,255,.4), transparent),
     radial-gradient(2px 2px at 40% 80%, rgba(255,255,255,.5), transparent),
     radial-gradient(1px 1px at 90% 25%, rgba(255,255,255,.4), transparent),
-    linear-gradient(180deg, #05061a 0%, var(--navy) 60%, #131742 100%);
+    linear-gradient(180deg, rgba(5,6,26,.82) 0%, rgba(13,16,48,.78) 60%, rgba(19,23,66,.85) 100%),
+    url('/hub-bg.jpg');
+  background-size:auto,auto,auto,auto,auto,cover,cover;
+  background-position:0 0,0 0,0 0,0 0,0 0,center,center top;
+  background-repeat:no-repeat;
   background-attachment:fixed;
 }
 .screen{display:none}
@@ -63,7 +70,8 @@ body{
   padding:24px 12px;text-align:center;cursor:pointer;transition:transform .15s, border-color .15s;
 }
 .game-tile:hover{transform:translateY(-2px);border-color:var(--accent)}
-.game-tile-icon{font-size:40px;margin-bottom:10px}
+.game-tile-icon{width:48px;height:48px;margin:0 auto 10px;border-radius:10px;overflow:hidden}
+.game-tile-icon img{width:100%;height:100%;object-fit:cover;display:block}
 .game-tile-name{font-weight:700;font-size:14px}
 .online-panel{background:rgba(28,32,80,.55);border:1px solid rgba(255,255,255,.08);border-radius:var(--radius);padding:16px}
 .online-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)}
@@ -320,7 +328,7 @@ function renderGames() {
   if (!games.length) { grid.innerHTML = '<div class="empty-note">No games configured yet.</div>'; return; }
   grid.innerHTML = games.map(g => `
     <div class="game-tile" data-game-id="${g.id}">
-      <div class="game-tile-icon">${g.icon}</div>
+      <div class="game-tile-icon"><img src="${g.icon}" alt="${g.name}"></div>
       <div class="game-tile-name">${g.name}</div>
     </div>`).join('');
   grid.querySelectorAll('.game-tile').forEach(el => {
@@ -381,7 +389,7 @@ function renderOnline() {
     <div class="online-row">
       <div class="online-name"><span class="online-dot"></span>${u.name}</div>
       <select class="invite-select" data-user-id="${u.id}" ${games.length ? '' : 'disabled'}>
-        ${games.map(g => `<option value="${g.id}">${g.icon} ${g.name}</option>`).join('')}
+        ${games.map(g => `<option value="${g.id}">${g.name}</option>`).join('')}
       </select>
       <button class="invite-btn" data-user-id="${u.id}" ${games.length ? '' : 'disabled'}>Invite</button>
     </div>`).join('');

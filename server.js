@@ -34,8 +34,8 @@ const ADMIN_EMAIL          = (process.env.ADMIN_EMAIL || 'bmcolson80@gmail.com')
 
 // ── Games catalog ───────────────────────────────────────────
 const GAMES = [
-  { id:'azul',    name:'Azul',    icon:'🔷', url: process.env.AZUL_URL    || '' },
-  { id:'mahjong', name:'Mah Jong', icon:'🀄', url: process.env.MAHJONG_URL || '' },
+  { id:'azul',    name:'Azul',    icon:'/icon-azul.png',    url: process.env.AZUL_URL    || '' },
+  { id:'mahjong', name:'Mah Jong', icon:'/icon-mahjong.png', url: process.env.MAHJONG_URL || '' },
 ].filter(g => g.url);
 
 // ── Account sync (replicate-on-write across sibling games) ──
