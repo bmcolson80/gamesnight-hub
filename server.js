@@ -11,8 +11,11 @@ import bcrypt         from 'bcryptjs';
 import jwt            from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
 import { initDB, createUser, getUserByEmail, getUserById, getAllUsers,
-         createOTP, getValidOTP, consumeOTP, updateUserPassword, upsertUser } from './db.js';
+         createOTP, getValidOTP, consumeOTP, updateUserPassword, upsertUser,
+         savePushSubscription, removePushSubscription, setPushEnabled,
+         getPushSubscriptions, getUserPushStatus } from './db.js';
 import { Resend } from 'resend';
+import webpush from 'web-push';
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
@@ -31,6 +34,45 @@ process.on('unhandledRejection', (reason) => {
 const JWT_SECRET           = process.env.JWT_SECRET || 'azul-secret-change-in-production';
 const INTERNAL_SYNC_SECRET = process.env.INTERNAL_SYNC_SECRET || '';
 const ADMIN_EMAIL          = (process.env.ADMIN_EMAIL || 'bmcolson80@gmail.com').toLowerCase();
+
+// ── Web Push / VAPID ────────────────────────────────────────
+const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || '';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || '';
+const VAPID_EMAIL   = process.env.VAPID_EMAIL || 'mailto:admin@gamesnight.app';
+
+if (VAPID_PUBLIC && VAPID_PRIVATE) {
+  webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC, VAPID_PRIVATE);
+  console.log('🔔 Push notifications enabled');
+} else {
+  console.log('⚠️  Push notifications disabled (set VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY)');
+}
+
+async function sendPushToUser(userId, payload) {
+  if (!VAPID_PUBLIC || !VAPID_PRIVATE) return;
+  const subs = getPushSubscriptions(userId);
+  for (const sub of subs) {
+    try {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: sub.keys },
+        JSON.stringify(payload)
+      );
+    } catch (err) {
+      if (err.statusCode === 410) {
+        removePushSubscription(userId, sub.endpoint);
+        console.log('[push] Removed expired subscription for user', userId);
+      } else {
+        console.error('[push] Send failed:', err.message);
+      }
+    }
+  }
+}
+
+// Mints a short-lived first-party-shaped JWT for a specific user, reusing the
+// shared JWT_SECRET, so a push notification can deep-link straight into a
+// sibling game already logged in via its /sso handoff.
+function mintUserJWT(user, expiresIn = '15m') {
+  return jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn });
+}
 
 // ── Games catalog ───────────────────────────────────────────
 const GAMES = [
@@ -98,6 +140,15 @@ async function sendOTPEmail(email, code) {
 // ── Presence / invite state ─────────────────────────────────
 // hubClients: Map<ws, { userId, name }>
 const hubClients = new Map();
+
+// Invites addressed to a user who isn't currently WS-connected to the hub
+// (the common case — most of the time a player is off inside a game, not
+// sitting on the hub dashboard). Delivered as a push notification right
+// away, then replayed as a live toast the next time that user's hub tab
+// connects (e.g. after tapping the notification).
+// pendingInvites: Map<toUserId, { fromUserId, fromName, game, ts }>
+const pendingInvites = new Map();
+const PENDING_INVITE_TTL_MS = 10 * 60 * 1000;
 
 // ── Express setup ───────────────────────────────────────────
 const app = express();
@@ -209,6 +260,45 @@ app.get('/api/games', (_, res) => {
   res.json({ games: GAMES.map(g => ({ id:g.id, name:g.name, icon:g.icon, url:g.url })) });
 });
 
+// Every other registered hub account — the invite panel's player list.
+// Separate from live WS presence (hubClients): a player is invitable any
+// time, not only while they happen to have the hub tab open, since an
+// invite now reaches them via push if they're off playing another game.
+app.get('/api/users', requireAuth, (req, res) => {
+  const users = getAllUsers()
+    .filter(u => u.id !== req.user.id)
+    .map(u => ({ id: u.id, name: u.name }));
+  res.json({ users });
+});
+
+// Calls each sibling game's own requireAuth-gated /api/my-games on this
+// user's behalf (short-lived per-user JWT, same shared-secret trust the SSO
+// handoff and admin dashboard already use) and merges the results so the
+// hub dashboard can show "your active games" across the whole collection.
+app.get('/api/my-active-games', requireAuth, async (req, res) => {
+  const user = getUserById(req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const token = mintUserJWT(user, '1m');
+
+  const perGame = await Promise.all(GAMES.map(async (game) => {
+    const authHeaders = game.id === 'mahjong'
+      ? { Cookie: `token=${token}` }
+      : { Authorization: `Bearer ${token}` };
+    try {
+      const r = await fetch(`${game.url}/api/my-games`, { headers: authHeaders });
+      if (!r.ok) return [];
+      const data = await r.json();
+      const games = Array.isArray(data) ? data : (data.games || []);
+      return games.map(g => ({ ...g, gameId: game.id, gameName: game.name, gameIcon: game.icon }));
+    } catch (err) {
+      console.error(`[my-active-games] Failed to reach ${game.id}:`, err.message);
+      return [];
+    }
+  }));
+
+  res.json({ games: perGame.flat() });
+});
+
 // Mints a fresh SSO redirect for a given game. Kept server-side (rather
 // than the client building the URL itself) so the JWT is only ever read
 // from the authenticated session cookie, not floating in client JS state.
@@ -229,6 +319,36 @@ app.post('/api/internal/sync-account', requireInternalSecret, (req, res) => {
   upsertUser({ id: generateId(), email, name, password: passwordHash });
   fanOutAccountSync({ email, name, passwordHash, sourceGameId: sourceGameId || 'hub' });
   res.json({ ok: true });
+});
+
+// ── Push notification routes ───────────────────────────────
+app.get('/api/push/vapid-key', (_, res) => {
+  res.json({ publicKey: VAPID_PUBLIC || null });
+});
+
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const { endpoint, keys } = req.body;
+  if (!endpoint || !keys) return res.status(400).json({ error: 'endpoint and keys required' });
+  savePushSubscription({ id: generateId(), userId: req.user.id, endpoint, keys });
+  res.json({ ok: true });
+});
+
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
+  const { endpoint } = req.body;
+  if (!endpoint) return res.status(400).json({ error: 'endpoint required' });
+  removePushSubscription(req.user.id, endpoint);
+  res.json({ ok: true });
+});
+
+app.post('/api/push/enabled', requireAuth, (req, res) => {
+  const { enabled } = req.body;
+  setPushEnabled(req.user.id, !!enabled);
+  res.json({ ok: true });
+});
+
+app.get('/api/push/status', requireAuth, (req, res) => {
+  const status = getUserPushStatus(req.user.id);
+  res.json({ ...status, vapidAvailable: !!(VAPID_PUBLIC && VAPID_PRIVATE) });
 });
 
 // One-time (and safely re-runnable) reconciliation: pushes every account
@@ -338,6 +458,7 @@ wss.on('connection', (ws, req) => {
   if (identity) {
     hubClients.set(ws, identity);
     broadcastOnlineList();
+    flushPendingInvite(ws, identity);
   }
 
   ws.on('message', raw => {
@@ -376,25 +497,61 @@ function onInvite(ws, { toUserId, game }) {
   if (!gameDef) return send(ws, { type:'error', message:'Unknown game' });
 
   const targetWs = findClientByUserId(toUserId);
-  if (!targetWs) return send(ws, { type:'error', message:'That player is no longer online.' });
-
-  send(targetWs, { type:'invite_received', fromUser:{ id: from.userId, name: from.name }, game });
+  if (targetWs) {
+    send(targetWs, { type:'invite_received', fromUser:{ id: from.userId, name: from.name }, game });
+  } else {
+    // Not on the hub page right now — queue it so it replays as a live
+    // toast the moment they reconnect, and push-notify them in the meantime.
+    pendingInvites.set(toUserId, { fromUserId: from.userId, fromName: from.name, game, ts: Date.now() });
+    sendPushToUser(toUserId, {
+      title: `${from.name} invited you to play ${gameDef.name}`,
+      body:  'Tap to accept.',
+      tag:   `gamesnight-invite-${from.userId}`,
+      data:  { type:'invite', url:'/' },
+    });
+  }
+  send(ws, { type:'invite_sent', toUserId, game, delivered: !!targetWs });
 }
 
 function onInviteResponse(ws, { toUserId, game, accepted }) {
   const from = hubClients.get(ws);
   if (!from) return send(ws, { type:'error', message:'Not authenticated' });
+  pendingInvites.delete(from.userId);
   const inviterWs = findClientByUserId(toUserId);
 
   if (!accepted) {
     if (inviterWs) send(inviterWs, { type:'invite_declined', byUser:{ id: from.userId, name: from.name }, game });
     return;
   }
-  if (!inviterWs) return send(ws, { type:'error', message:'The inviter is no longer online.' });
 
+  // The acceptor is definitely connected right now (they just sent this),
+  // so they always take the "creator" role and can proceed immediately —
+  // the inviter may have gone offline since sending the original invite.
   const code = generateInviteCode();
-  send(inviterWs, { type:'invite_room_ready', code, game, role:'creator' });
-  send(ws,        { type:'invite_room_ready', code, game, role:'joiner' });
+  send(ws, { type:'invite_room_ready', code, game, role:'creator' });
+
+  if (inviterWs) {
+    send(inviterWs, { type:'invite_room_ready', code, game, role:'joiner' });
+    return;
+  }
+  const gameDef = GAMES.find(g => g.id === game);
+  const inviter = getUserById(toUserId);
+  if (!gameDef || !inviter) return;
+  const joinToken = mintUserJWT(inviter);
+  sendPushToUser(toUserId, {
+    title: `${from.name} accepted your invite!`,
+    body:  `Tap to join your ${gameDef.name} game.`,
+    tag:   `gamesnight-invite-${from.userId}`,
+    data:  { type:'invite_accepted', url:`${gameDef.url}/sso?token=${encodeURIComponent(joinToken)}&joinRoom=${code}` },
+  });
+}
+
+function flushPendingInvite(ws, identity) {
+  const invite = pendingInvites.get(identity.userId);
+  if (!invite) return;
+  pendingInvites.delete(identity.userId);
+  if (Date.now() - invite.ts > PENDING_INVITE_TTL_MS) return;
+  send(ws, { type:'invite_received', fromUser:{ id: invite.fromUserId, name: invite.fromName }, game: invite.game });
 }
 
 function findClientByUserId(userId) {

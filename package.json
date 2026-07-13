@@ -19,6 +19,7 @@
     "jsonwebtoken": "^9.0.3",
     "resend": "^6.12.4",
     "sql.js": "^1.14.1",
+    "web-push": "^3.6.7",
     "ws": "^8.18.0"
   },
   "engines": {

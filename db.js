@@ -47,6 +47,18 @@ export async function initDB() {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      endpoint    TEXT NOT NULL,
+      keys        TEXT NOT NULL,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      created     INTEGER DEFAULT (strftime('%s','now')),
+      UNIQUE(user_id, endpoint)
+    )
+  `);
+
   save();
   console.log('📦 Database ready');
 }
@@ -113,6 +125,42 @@ export function upsertUser({ id, email, name, password }) {
     );
   }
   save();
+}
+
+// ── Push subscriptions ───────────────────────────────────
+export function savePushSubscription({ id, userId, endpoint, keys }) {
+  db.run(`
+    INSERT INTO push_subscriptions (id, user_id, endpoint, keys, enabled)
+    VALUES (?, ?, ?, ?, 1)
+    ON CONFLICT(user_id, endpoint) DO UPDATE SET keys=excluded.keys, enabled=1
+  `, [id, userId, endpoint, JSON.stringify(keys)]);
+  save();
+}
+
+export function removePushSubscription(userId, endpoint) {
+  db.run('DELETE FROM push_subscriptions WHERE user_id=? AND endpoint=?', [userId, endpoint]);
+  save();
+}
+
+export function setPushEnabled(userId, enabled) {
+  db.run('UPDATE push_subscriptions SET enabled=? WHERE user_id=?', [enabled ? 1 : 0, userId]);
+  save();
+}
+
+export function getPushSubscriptions(userId) {
+  const res = db.exec('SELECT * FROM push_subscriptions WHERE user_id=? AND enabled=1', [userId]);
+  if (!res.length) return [];
+  return res[0].values.map(row => {
+    const obj = zipRow(res[0].columns, row);
+    return { ...obj, keys: JSON.parse(obj.keys) };
+  });
+}
+
+export function getUserPushStatus(userId) {
+  const res = db.exec('SELECT COUNT(*) as total, SUM(enabled) as active FROM push_subscriptions WHERE user_id=?', [userId]);
+  if (!res.length || !res[0].values.length) return { subscribed: false, enabled: false };
+  const [total, active] = res[0].values[0];
+  return { subscribed: total > 0, enabled: active > 0 };
 }
 
 // ── OTP / Password reset ─────────────────────────────────
