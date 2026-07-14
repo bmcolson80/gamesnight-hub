@@ -12,6 +12,7 @@ import jwt            from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
 import { initDB, createUser, getUserByEmail, getUserById, getAllUsers,
          createOTP, getValidOTP, consumeOTP, updateUserPassword, upsertUser,
+         updateUserName, setNotifyEmail,
          savePushSubscription, removePushSubscription, setPushEnabled,
          getPushSubscriptions, getUserPushStatus } from './db.js';
 import { Resend } from 'resend';
@@ -64,6 +65,25 @@ async function sendPushToUser(userId, payload) {
         console.error('[push] Send failed:', err.message);
       }
     }
+  }
+}
+
+// Email is a fallback channel for when push isn't active, not a parallel
+// one — never send both. Invites are a one-shot event, so unlike turn
+// notifications this doesn't need debouncing.
+async function sendInviteEmail(userId, fromName, gameName) {
+  if (!resend) { console.log(`[DEV] Invite email skipped for user ${userId} (no RESEND_API_KEY)`); return; }
+  const user = getUserById(userId);
+  if (!user || !user.notify_email) return;
+  try {
+    await resend.emails.send({
+      from:    'GamesNight <noreply@' + (process.env.EMAIL_DOMAIN || 'gamesnight.app') + '>',
+      to:      user.email,
+      subject: `${fromName} invited you to play ${gameName}!`,
+      text:    `${fromName} just invited you to a round of ${gameName} — get in there!\n\nTurn on push notifications in GamesNight for instant updates next time — no more waiting on email.`,
+    });
+  } catch (err) {
+    console.error('[email notify] Failed:', err.message);
   }
 }
 
@@ -138,8 +158,19 @@ async function sendOTPEmail(email, code) {
 }
 
 // ── Presence / invite state ─────────────────────────────────
-// hubClients: Map<ws, { userId, name }>
+// hubClients: Map<ws, { userId, name, visible }>
 const hubClients = new Map();
+
+// The hub has no per-room concept — a user counts as "actively viewing" if
+// they have a live WS connection to the hub dashboard with a foregrounded
+// tab. A user can have multiple simultaneous connections (two tabs/
+// devices); any one of them being visible suppresses the notification.
+function isActivelyViewing(userId) {
+  for (const meta of hubClients.values()) {
+    if (meta.userId === userId && meta.visible) return true;
+  }
+  return false;
+}
 
 // Invites addressed to a user who isn't currently WS-connected to the hub
 // (the common case — most of the time a player is off inside a game, not
@@ -256,6 +287,33 @@ app.get('/api/me', requireAuth, (req, res) => {
   });
 });
 
+app.get('/api/profile', requireAuth, (req, res) => {
+  const user = getUserById(req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ user: { id:user.id, email:user.email, name:user.name, notifyEmail: !!user.notify_email } });
+});
+
+app.post('/api/profile/notify', requireAuth, (req, res) => {
+  const { notifyEmail } = req.body || {};
+  setNotifyEmail(req.user.id, !!notifyEmail);
+  res.json({ ok: true });
+});
+
+// Display name is cosmetic, not a login identifier — no verification step
+// needed, updates immediately. Name is part of the shared identity, so
+// replicate it to every sibling game the same way password changes already are.
+app.post('/api/profile/name', requireAuth, (req, res) => {
+  const name = (req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'Name is required' });
+  if (name.length > 20) return res.status(400).json({ error: 'Name must be 20 characters or fewer' });
+  updateUserName(req.user.id, name);
+  const user = getUserById(req.user.id);
+  const token = jwt.sign({ id:user.id, email:user.email, name:user.name }, JWT_SECRET, { expiresIn:'30d' });
+  setSessionCookie(res, token);
+  fanOutAccountSync({ email: user.email, name: user.name, sourceGameId: 'hub' });
+  res.json({ ok: true, user: { id:user.id, email:user.email, name:user.name } });
+});
+
 app.get('/api/games', (_, res) => {
   res.json({ games: GAMES.map(g => ({ id:g.id, name:g.name, icon:g.icon, url:g.url })) });
 });
@@ -314,8 +372,10 @@ app.get('/api/games/:id/launch', requireAuth, (req, res) => {
 // up with the same password. Internal-secret-gated, not a user session route.
 app.post('/api/internal/sync-account', requireInternalSecret, (req, res) => {
   const { email, name, passwordHash, sourceGameId } = req.body || {};
-  if (!email || !name || !passwordHash)
-    return res.status(400).json({ error: 'email, name and passwordHash required' });
+  if (!email || !name)
+    return res.status(400).json({ error: 'email and name required' });
+  if (!getUserByEmail(email) && !passwordHash)
+    return res.status(400).json({ error: 'passwordHash required for new user' });
   upsertUser({ id: generateId(), email, name, password: passwordHash });
   fanOutAccountSync({ email, name, passwordHash, sourceGameId: sourceGameId || 'hub' });
   res.json({ ok: true });
@@ -456,7 +516,7 @@ wss.on('connection', (ws, req) => {
     } catch {}
   }
   if (identity) {
-    hubClients.set(ws, identity);
+    hubClients.set(ws, { ...identity, visible: true });
     broadcastOnlineList();
     flushPendingInvite(ws, identity);
   }
@@ -482,12 +542,22 @@ function handleMessage(ws, msg) {
     switch (msg.type) {
       case 'invite':          return onInvite(ws, msg);
       case 'invite_response': return onInviteResponse(ws, msg);
+      case 'visibility':      return onVisibility(ws, msg);
       default: send(ws, { type:'error', message:`Unknown: ${msg.type}` });
     }
   } catch (err) {
     console.error('[handleMessage] Unhandled error:', err);
     try { send(ws, { type:'error', message:'An unexpected error occurred. Please try again.' }); } catch {}
   }
+}
+
+// Client sends this on every Page Visibility API change (tab foregrounded/
+// backgrounded); defaults to visible:true at connection time until the
+// first real event arrives, since the user just navigated here.
+function onVisibility(ws, { visible }) {
+  const meta = hubClients.get(ws);
+  if (!meta) return;
+  hubClients.set(ws, { ...meta, visible: !!visible });
 }
 
 function onInvite(ws, { toUserId, game }) {
@@ -500,15 +570,25 @@ function onInvite(ws, { toUserId, game }) {
   if (targetWs) {
     send(targetWs, { type:'invite_received', fromUser:{ id: from.userId, name: from.name }, game });
   } else {
-    // Not on the hub page right now — queue it so it replays as a live
-    // toast the moment they reconnect, and push-notify them in the meantime.
+    // Not connected to the hub at all — queue it so it replays as a live
+    // toast the moment they reconnect.
     pendingInvites.set(toUserId, { fromUserId: from.userId, fromName: from.name, game, ts: Date.now() });
+  }
+
+  // Push/email only if they're not actively looking at the hub right now —
+  // covers not connected at all, and connected-but-backgrounded alike. A
+  // live-but-backgrounded tab already got the WS message above; push exists
+  // for exactly that case, so it still fires here.
+  if (!isActivelyViewing(toUserId)) {
     sendPushToUser(toUserId, {
       title: `${from.name} invited you to play ${gameDef.name}`,
       body:  'Tap to accept.',
       tag:   `gamesnight-invite-${from.userId}`,
       data:  { type:'invite', url:'/' },
     });
+    if (getPushSubscriptions(toUserId).length === 0) {
+      sendInviteEmail(toUserId, from.name, gameDef.name);
+    }
   }
   send(ws, { type:'invite_sent', toUserId, game, delivered: !!targetWs });
 }
@@ -583,4 +663,4 @@ function generateInviteCode() {
   return Math.random().toString(36).substr(2,4).toUpperCase();
 }
 
-export { app, server };
+export { app, server, hubClients, isActivelyViewing };

@@ -111,13 +111,30 @@ export function updateUserPassword(email, hashedPassword) {
   save();
 }
 
+export function updateUserName(userId, newName) {
+  db.run("UPDATE users SET name=? WHERE id=?", [newName.trim(), userId]);
+  save();
+}
+
+export function setNotifyEmail(userId, enabled) {
+  db.run("UPDATE users SET notify_email=? WHERE id=?", [enabled ? 1 : 0, userId]);
+  save();
+}
+
 // Create-or-update by email, used to replicate an account created/changed on
-// a sibling game so every app converges on the same password.
+// a sibling game so every app converges on the same name/password. `password`
+// is optional for existing users — a name-only change has no new hash to
+// replicate — but required to create a brand-new user (caller must check
+// this itself, since only it knows whether the user already exists).
 export function upsertUser({ id, email, name, password }) {
   const normalizedEmail = email.toLowerCase().trim();
   const existing = getUserByEmail(normalizedEmail);
   if (existing) {
-    db.run('UPDATE users SET name=?, password=? WHERE email=?', [name, password, normalizedEmail]);
+    if (password) {
+      db.run('UPDATE users SET name=?, password=? WHERE email=?', [name, password, normalizedEmail]);
+    } else {
+      db.run('UPDATE users SET name=? WHERE email=?', [name, normalizedEmail]);
+    }
   } else {
     db.run(
       'INSERT INTO users (id, email, name, password) VALUES (?, ?, ?, ?)',

@@ -9,7 +9,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
 import fs from 'fs';
-import { server } from '../server.js';
+import { server, hubClients, isActivelyViewing } from '../server.js';
 import { initDB } from '../db.js';
 
 const TEST_PORT = 4099;
@@ -172,6 +172,59 @@ describe('internal account sync', () => {
     });
     assert.equal(loginRes.status, 401);
   });
+
+  test('rejects a brand-new account with no passwordHash', async () => {
+    const email = `new-nohash-${Date.now()}@example.com`;
+    const res = await fetch(`${BASE_URL}/api/internal/sync-account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SYNC_SECRET || '' },
+      body: JSON.stringify({ email, name: 'No Hash', sourceGameId: 'azul' }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  // A name-only change (e.g. from another game's profile settings) has no new
+  // password hash to replicate — this must update the name without requiring
+  // or touching the password, and must NOT invalidate the existing password.
+  test('updates only the name for an existing account when passwordHash is omitted', async () => {
+    const email = `name-only-${Date.now()}@example.com`;
+    await registerAndLogin(email, 'Old Name', 'staysthesame123');
+
+    const syncRes = await fetch(`${BASE_URL}/api/internal/sync-account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': process.env.INTERNAL_SYNC_SECRET || '' },
+      body: JSON.stringify({ email, name: 'New Name', sourceGameId: 'azul' }),
+    });
+    assert.equal(syncRes.status, 200);
+
+    const loginRes = await fetch(`${BASE_URL}/api/login`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: 'staysthesame123' }),
+    });
+    assert.equal(loginRes.status, 200);
+    const loginData = await loginRes.json();
+    assert.equal(loginData.user.name, 'New Name');
+  });
+});
+
+describe('active-session suppression (isActivelyViewing)', () => {
+  test('true when a hub client for that userId is visible', () => {
+    const fakeWs = {};
+    hubClients.set(fakeWs, { userId: 'user-1', name: 'A', visible: true });
+    assert.equal(isActivelyViewing('user-1'), true);
+    hubClients.delete(fakeWs);
+  });
+
+  test('false when the matching client is connected but backgrounded', () => {
+    const fakeWs = {};
+    hubClients.set(fakeWs, { userId: 'user-2', name: 'B', visible: false });
+    assert.equal(isActivelyViewing('user-2'), false);
+    hubClients.delete(fakeWs);
+  });
+
+  test('false when there is no connection at all for that user', () => {
+    assert.equal(isActivelyViewing('nobody-connected'), false);
+  });
 });
 
 describe('presence', () => {
@@ -183,14 +236,16 @@ describe('presence', () => {
     await new Promise(resolve => wsA.on('open', resolve));
 
     const wsB = connectWS(b.cookie);
-    const listMsg = await waitForMessage(wsA, m => m.type === 'online_list' && m.users.some(u => u.id === b.user.id));
-    assert.ok(listMsg.users.some(u => u.name === 'Erin'));
+    try {
+      const listMsg = await waitForMessage(wsA, m => m.type === 'online_list' && m.users.some(u => u.id === b.user.id));
+      assert.ok(listMsg.users.some(u => u.name === 'Erin'));
 
-    wsB.close();
-    const listAfterClose = await waitForMessage(wsA, m => m.type === 'online_list' && !m.users.some(u => u.id === b.user.id));
-    assert.ok(!listAfterClose.users.some(u => u.id === b.user.id));
-
-    wsA.close();
+      wsB.close();
+      const listAfterClose = await waitForMessage(wsA, m => m.type === 'online_list' && !m.users.some(u => u.id === b.user.id));
+      assert.ok(!listAfterClose.users.some(u => u.id === b.user.id));
+    } finally {
+      wsA.close(); wsB.close();
+    }
   });
 });
 
@@ -218,12 +273,18 @@ describe('invites', () => {
 
     const readyPromiseA = waitForMessage(wsA, m => m.type === 'invite_room_ready');
     const readyPromiseB = waitForMessage(wsB, m => m.type === 'invite_room_ready');
+    // wsB is the one accepting (sending invite_response) — per onInviteResponse's
+    // documented design, the acceptor always becomes 'creator' since they're
+    // guaranteed to be online right now, while the original inviter (wsA) may
+    // have gone offline since sending the invite and becomes 'joiner'.
     wsB.send(JSON.stringify({ type: 'invite_response', toUserId: a.user.id, game: 'azul', accepted: true }));
-    const [readyA, readyB] = await Promise.all([readyPromiseA, readyPromiseB]);
-    assert.equal(readyA.code, readyB.code);
-    assert.equal(readyA.role, 'creator');
-    assert.equal(readyB.role, 'joiner');
-
-    wsA.close(); wsB.close();
+    try {
+      const [readyA, readyB] = await Promise.all([readyPromiseA, readyPromiseB]);
+      assert.equal(readyA.code, readyB.code);
+      assert.equal(readyA.role, 'joiner');
+      assert.equal(readyB.role, 'creator');
+    } finally {
+      wsA.close(); wsB.close();
+    }
   });
 });

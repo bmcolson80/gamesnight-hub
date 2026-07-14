@@ -55,6 +55,24 @@ body{
 .error-msg{display:none;background:rgba(255,80,80,.15);border:1px solid rgba(255,80,80,.4);color:#ffb0b0;padding:10px 12px;border-radius:var(--radius-sm);font-size:13px;margin-bottom:14px}
 .foot-link{text-align:center;font-size:13px;color:var(--text-dim);margin-top:4px}
 
+/* Preferences modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(5,6,26,.7);z-index:50;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.active{display:flex}
+.modal{background:rgba(28,32,80,.95);border:1px solid rgba(255,255,255,.1);border-radius:var(--radius);padding:24px;max-width:380px;width:100%;backdrop-filter:blur(6px)}
+.modal h2{margin:0 0 20px;font-size:15px;letter-spacing:2px;color:var(--text-dim)}
+.pref-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.08)}
+.pref-row:last-of-type{border-bottom:none}
+.pref-label{font-size:14px}
+.toggle{position:relative;display:inline-block;width:42px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;cursor:pointer;inset:0;background:rgba(255,255,255,.2);border-radius:24px;transition:.15s}
+.toggle-slider::before{content:'';position:absolute;height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.15s}
+.toggle input:checked+.toggle-slider{background:var(--accent)}
+.toggle input:checked+.toggle-slider::before{transform:translateX(18px)}
+.modal-actions{display:flex;gap:8px;margin-top:16px}
+.modal-actions .btn{margin-bottom:0}
+.btn-secondary{background:rgba(255,255,255,.08);color:var(--text)}
+
 /* Dashboard */
 .dashboard-header{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid rgba(255,255,255,.08)}
 .dh-logo{font-weight:800;letter-spacing:2px}
@@ -178,6 +196,7 @@ body{
       <div class="avatar" id="user-avatar">?</div>
       <span id="user-name-display"></span>
       <button class="btn-notif" id="notif-btn" style="display:none" onclick="enablePush()">🔔 Enable Notifications</button>
+      <button class="btn-logout" onclick="openPreferences()">⚙️ Preferences</button>
       <button class="btn-logout" id="admin-btn" style="display:none" onclick="window.location.href='/admin'">Admin</button>
       <button class="btn-logout" onclick="doLogout()">Log out</button>
     </div>
@@ -199,6 +218,30 @@ body{
 </div>
 
 <div id="invite-toast-container"></div>
+
+<!-- ── Preferences modal ── -->
+<div class="modal-overlay" id="prefs-overlay" onclick="closePreferences()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h2>PREFERENCES</h2>
+    <div class="error-msg" id="prefs-error"></div>
+    <div class="field-group">
+      <label>Display Name</label>
+      <input type="text" id="prefs-name-input" maxlength="20" placeholder="Your name">
+    </div>
+    <div class="pref-row">
+      <span class="pref-label">Push notifications</span>
+      <label class="toggle"><input type="checkbox" id="prefs-push-toggle" onchange="handlePrefsPushToggle(this.checked)"><span class="toggle-slider"></span></label>
+    </div>
+    <div class="pref-row">
+      <span class="pref-label">Email notifications</span>
+      <label class="toggle"><input type="checkbox" id="prefs-email-toggle" onchange="savePrefsNotify()"><span class="toggle-slider"></span></label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closePreferences()">Close</button>
+      <button class="btn btn-primary" onclick="savePrefsName()">Save Name</button>
+    </div>
+  </div>
+</div>
 
 <script>
 let currentUser = null;
@@ -429,11 +472,18 @@ async function resumeGame(gameId, roomCode) {
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}`);
+  ws.onopen = () => sendWS({ type:'visibility', visible: document.visibilityState === 'visible' });
   ws.onmessage = ev => { try { handleWSMessage(JSON.parse(ev.data)); } catch {} };
   ws.onclose = () => { if (currentUser) setTimeout(connectWS, 2000); };
 }
 
 function sendWS(data) { if (ws?.readyState === 1) ws.send(JSON.stringify(data)); }
+
+// Lets the server suppress invite push/email when this hub tab is
+// foregrounded — the server already delivers the invite live over this socket.
+document.addEventListener('visibilitychange', () => {
+  sendWS({ type:'visibility', visible: document.visibilityState === 'visible' });
+});
 
 function handleWSMessage(msg) {
   switch (msg.type) {
@@ -582,11 +632,85 @@ async function subscribePush() {
   });
 }
 
+async function unsubscribePush() {
+  if (!_currentSub) return;
+  await fetch('/api/push/unsubscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: _currentSub.endpoint }),
+  });
+  await _currentSub.unsubscribe();
+  _currentSub = null;
+}
+
 function urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
   const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
   const rawData = atob(base64);
   return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+// ── Preferences modal ────────────────────────────────────────
+async function openPreferences() {
+  document.getElementById('prefs-error').style.display = 'none';
+  document.getElementById('prefs-name-input').value = currentUser?.name || '';
+  document.getElementById('prefs-push-toggle').checked = !!_currentSub;
+  document.getElementById('prefs-push-toggle').disabled = !_vapidKey;
+  try {
+    const res = await fetch('/api/profile');
+    const data = await res.json();
+    document.getElementById('prefs-email-toggle').checked = !!data.user?.notifyEmail;
+  } catch {}
+  document.getElementById('prefs-overlay').classList.add('active');
+}
+
+function closePreferences() {
+  document.getElementById('prefs-overlay').classList.remove('active');
+}
+
+async function handlePrefsPushToggle(checked) {
+  try {
+    if (checked) {
+      if (Notification.permission !== 'granted') {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') { document.getElementById('prefs-push-toggle').checked = false; return; }
+      }
+      await subscribePush();
+      document.getElementById('notif-btn').style.display = 'none';
+    } else {
+      await unsubscribePush();
+    }
+  } catch (err) {
+    console.error('Push toggle failed:', err);
+  }
+}
+
+async function savePrefsNotify() {
+  const emailOn = document.getElementById('prefs-email-toggle').checked;
+  await fetch('/api/profile/notify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notifyEmail: emailOn }),
+  });
+}
+
+async function savePrefsName() {
+  const name = document.getElementById('prefs-name-input').value.trim();
+  const errEl = document.getElementById('prefs-error');
+  errEl.style.display = 'none';
+  if (!name) { errEl.textContent = 'Enter a display name.'; errEl.style.display = 'block'; return; }
+  try {
+    const res = await fetch('/api/profile/name', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (!res.ok) { errEl.textContent = data.error; errEl.style.display = 'block'; return; }
+    currentUser = data.user;
+    document.getElementById('user-avatar').textContent = data.user.name.charAt(0).toUpperCase();
+    document.getElementById('user-name-display').textContent = data.user.name;
+    showToast('Name updated to ' + data.user.name);
+    closePreferences();
+  } catch { errEl.textContent = 'Connection error'; errEl.style.display = 'block'; }
 }
 
 checkSession();
